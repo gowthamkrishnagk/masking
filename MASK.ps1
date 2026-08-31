@@ -205,12 +205,55 @@ function Get-MaskedMixed {
     return Get-MaskedAlnum -Text $Value -RowNumber $RowNumber
 }
 
-# ---- 1. Ask for the CSV path ----
-$csvPath = Read-Host "Enter the full path to the CSV file"
+# ---- Helper: keep the console window open on error (matters when the script ----
+# ---- is launched by double-clicking rather than from an open terminal) ----
+function Exit-WithPause {
+    param([int]$Code = 1)
+    Write-Host ""
+    Read-Host "Press Enter to close"
+    exit $Code
+}
 
-if (-not (Test-Path -LiteralPath $csvPath)) {
-    Write-Host "File not found: $csvPath" -ForegroundColor Red
-    exit 1
+# ---- Helper: clean up a pasted file path ----
+# Fixes the most common reasons a visually-correct path fails to be found:
+#  - File Explorer's "Copy as path" wraps the path in double quotes, so what
+#    gets pasted is literally `"C:\folder\file.csv"`, quotes included
+#  - leading/trailing spaces left over from copy-pasting
+#  - environment variables like %OneDrive% or %USERPROFILE% in the path,
+#    which PowerShell does not expand automatically the way cmd.exe does
+function Get-CleanPath {
+    param([string]$RawPath)
+    $p = $RawPath.Trim()
+    if ($p.Length -ge 2) {
+        $first = $p.Substring(0, 1)
+        $last  = $p.Substring($p.Length - 1, 1)
+        if (($first -eq '"' -and $last -eq '"') -or ($first -eq "'" -and $last -eq "'")) {
+            $p = $p.Substring(1, $p.Length - 2).Trim()
+        }
+    }
+    return [Environment]::ExpandEnvironmentVariables($p)
+}
+
+# ---- 1. Ask for the CSV path (up to 3 tries, cleaning the input each time) ----
+$csvPath = $null
+for ($attempt = 1; $attempt -le 3; $attempt++) {
+    $rawInput  = Read-Host "Enter the full path to the CSV file"
+    $candidate = Get-CleanPath -RawPath $rawInput
+
+    if (Test-Path -LiteralPath $candidate) {
+        $csvPath = $candidate
+        break
+    }
+
+    Write-Host "File not found: $candidate" -ForegroundColor Red
+    if ($attempt -lt 3) {
+        Write-Host "(Quotes from 'Copy as path' and %variables% are handled automatically -- double-check for typos or a wrong drive/folder.)" -ForegroundColor Yellow
+    }
+}
+
+if (-not $csvPath) {
+    Write-Host "`nCould not find the file after 3 attempts." -ForegroundColor Red
+    Exit-WithPause
 }
 
 # ---- 2. Read the CSV ----
@@ -218,12 +261,12 @@ try {
     $data = Import-Csv -LiteralPath $csvPath
 } catch {
     Write-Host "Failed to read CSV: $_" -ForegroundColor Red
-    exit 1
+    Exit-WithPause
 }
 
 if (-not $data -or $data.Count -eq 0) {
     Write-Host "The CSV file appears to be empty." -ForegroundColor Red
-    exit 1
+    Exit-WithPause
 }
 
 $columns = $data[0].PSObject.Properties.Name
@@ -249,7 +292,7 @@ foreach ($idx in $selectedIndexes) {
 
 if ($selectedColumns.Count -eq 0) {
     Write-Host "No valid column selected. Exiting." -ForegroundColor Red
-    exit 1
+    Exit-WithPause
 }
 
 Write-Host ("`nMasking column(s): {0}" -f ($selectedColumns -join ', '))
@@ -287,3 +330,5 @@ $outputPath = Join-Path $directory ("{0}_masked{1}" -f $baseName, $extension)
 $data | Export-Csv -LiteralPath $outputPath -NoTypeInformation
 
 Write-Host "`nDone. Masked file saved to: $outputPath" -ForegroundColor Green
+Write-Host ""
+Read-Host "Press Enter to close"
